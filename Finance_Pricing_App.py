@@ -218,7 +218,7 @@ st.write("The Greeks are often used as financial indicators to assess risk of an
          change relative to changes in volatility. Implied Volatility is a measure of how much the market expects an asset to fluctuate \
          , and can be found by backing out the asset's price in the market.")
 st.header("Value at Risk Calculator")
-st.write("In finance, Value at Risk (VaR) is a metric for the greatest amount of losses over a given time frame. Used by financial firms \
+st.write("PAGE UNDER CONSTRUCTION - In finance, Value at Risk (VaR) is a metric for the greatest amount of losses over a given time frame. Used by financial firms \
          banks in investment analysis, it allows people to see the amount of risk they are exposed to through their portfolio. There are \
          various methods for calculation of VaR, such as the historical, parametric, and Monte Carlo simulation methods. Due to its \
          versatility and simple application, it can be used on stocks, bonds, and currencies, and is used widely in portfolio management. \
