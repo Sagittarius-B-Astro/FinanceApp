@@ -104,40 +104,42 @@ class BinaryOption:
         return call[0], put[0]
 
 class HestonOption:
-    def __init__(self, time_to_mature, interest, cur_price, str_price, kappa, theta, sigma, rho, v0):
+    def __init__(self, time_to_mature, interest, cur_price, str_price,
+                 kappa, theta, sigma, rho, v0, dividend_yield=0.0):
         self.time_to_mature = time_to_mature
         self.interest = interest
         self.cur_price = cur_price
         self.str_price = str_price
-        self.kappa = kappa
-        self.theta = theta
-        self.sigma = sigma
-        self.rho = rho
-        self.v0 = v0
+        self.kappa, self.theta, self.sigma = kappa, theta, sigma
+        self.rho, self.v0 = rho, v0
+        self.div_yield = dividend_yield
+
+    def _char_func(self, u):
+        T, r, q = self.time_to_mature, self.interest, self.div_yield
+        S0, kappa, theta, sigma, rho, v0 = (self.cur_price, self.kappa, self.theta,
+                                            self.sigma, self.rho, self.v0)
+        b = kappa - rho * sigma * 1j * u
+        d = np.sqrt(b**2 + sigma**2 * (1j * u + u**2))
+        g = (b - d) / (b + d)                 # "little trap" form: stable branch
+        e = np.exp(-d * T)
+        C = (r - q) * 1j * u * T + kappa * theta / sigma**2 * (
+            (b - d) * T - 2 * np.log((1 - g * e) / (1 - g)))
+        D = (b - d) / sigma**2 * (1 - e) / (1 - g * e)
+        return np.exp(C + D * v0 + 1j * u * np.log(S0))
 
     def price(self):
-        T = self.time_to_mature
-        r = self.interest
-        S0 = self.cur_price
-        K = self.str_price
-        kappa = self.kappa
-        theta = self.theta
-        sigma = self.sigma
-        rho = self.rho
-        v0 = self.v0
+        T, r, q = self.time_to_mature, self.interest, self.div_yield
+        S0, K = self.cur_price, self.str_price
+        lnK = np.log(K)
+        phi_mi = self._char_func(-1j)         # = E[S_T] = S0*exp((r-q)T)
 
-        def heston_char_func(x, S0, K, r, T, kappa, theta, sigma, rho, v0):
-            k = kappa - rho * sigma * 1j * x
-            M = sqrt((rho * sigma * 1j * x - k)**2 + sigma**2 * (x * 1j + x**2))
-            N = (rho * sigma * 1j * x - k + M) / (rho * sigma * 1j * x - k - M)
-            A = r * 1j * x * T + (kappa * theta) / sigma**2 * ((k - rho * sigma * 1j * x - M) * T - 2 * log((1 - N * exp(-M * T)) / (1 - N)))
-            C = (rho * sigma * 1j * x - k + M) * (exp(-M * T) - 1) / (sigma**2 * (1 - N * exp(-M * T)))
-            return exp(A + C * v0 + 1j * x * log(S0))
+        f1 = lambda u: np.real(np.exp(-1j*u*lnK) * self._char_func(u - 1j) / (1j*u*phi_mi))
+        f2 = lambda u: np.real(np.exp(-1j*u*lnK) * self._char_func(u) / (1j*u))
+        P1 = 0.5 + quad(f1, 1e-8, 200, limit=500)[0] / np.pi
+        P2 = 0.5 + quad(f2, 1e-8, 200, limit=500)[0] / np.pi
 
-        integrand = lambda x: real(exp(-1j * x * log(K)) / (1j * x) * heston_char_func(x - 1j, S0, K, r, T, kappa, theta, sigma, rho, v0))
-        integral, _ = quad(integrand, 0, inf)
-        call = exp(-r * T) * 0.5 * S0 - exp(-r * T) / pi * integral
-        put = exp(-r * T) / pi * integral - S0 + K * exp(-r *T)
+        call = S0 * np.exp(-q*T) * P1 - K * np.exp(-r*T) * P2
+        put = call - S0 * np.exp(-q*T) + K * np.exp(-r*T)   # parity
         return call, put
 
 def plot_heatmap(spot_range, vol_range, strike, option_price, model, model_type):

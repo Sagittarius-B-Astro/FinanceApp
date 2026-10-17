@@ -12,35 +12,33 @@ st.markdown("""
     justify-content: center;
     align-items: center;
     text-align: center;
-    padding: 8px; /* Adjust the padding to control height */
-    width: auto; /* Auto width for responsiveness, or set a fixed width if necessary */
-    margin: 0 auto; /* Center the container */
+    padding: 8px;
+    width: auto;
+    margin: 0 auto;
 }
 
 .metric-call {
-    background-color: #03ac13; /* Light green background */
-    color: black; /* Black font color */
-    margin-right: 15px; /* Spacing between CALL and PUT */
-    border-radius: 20px; /* Rounded corners */
+    background-color: #03ac13;
+    color: black;
+    margin-right: 15px;
+    border-radius: 20px;
 }
 
 .metric-put {
-    background-color: #d30000; /* Light red background */
-    color: black; /* Black font color */
-    border-radius: 20px; /* Rounded corners */
+    background-color: #d30000;
+    color: black;
+    border-radius: 20px;
 }
 
-/* Style for the value text */
 .metric-value {
-    font-size: 1.5rem; /* Adjust font size */
+    font-size: 1.5rem;
     font-weight: bold;
-    margin: 0; /* Remove default margins */
+    margin: 0;
 }
 
-/* Style for the label text */
 .metric-label {
-    font-size: 1rem; /* Adjust font size */
-    margin-bottom: 4px; /* Spacing between label and value */
+    font-size: 1rem;
+    margin-bottom: 4px;
 }
 
 </style>""", unsafe_allow_html=True)
