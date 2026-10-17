@@ -1,132 +1,143 @@
-import streamlit as st
+import time
 import numpy as np
 import pandas as pd
+import streamlit as st
 import yfinance as yf
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 
-class VAR():
-    def __init__(self, tickers, start_date, end_date, confidence, rolling, value):
-        self.tickers = tickers
-        self.start = start_date
-        self.end = end_date
+st.set_page_config(page_title="Value at Risk", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+
+
+@st.cache_data(ttl=3600, show_spinner="Downloading prices...")
+def download_prices(tickers: tuple, start: str, end: str) -> pd.DataFrame:
+    """Download adjusted closes. Cached for an hour so widget clicks don't re-hit Yahoo,
+    and retried with backoff because Yahoo intermittently rate-limits shared server IPs.
+    Exceptions are not cached by Streamlit, so a failed attempt is retried on the next run."""
+    last_error = None
+    for attempt in range(3):
+        try:
+            df = yf.download(list(tickers), start=start, end=end, auto_adjust=True,
+                             progress=False, threads=False)
+            if not df.empty and "Close" in df:
+                close = df["Close"]
+                if isinstance(close, pd.Series):          # single ticker
+                    close = close.to_frame(tickers[0])
+                close = close.dropna(axis=1, how="all")    # drop tickers Yahoo returned nothing for
+                if not close.empty:
+                    return close
+        except Exception as e:                             # e.g. YFRateLimitError
+            last_error = e
+        time.sleep(2 * (attempt + 1))
+    raise ValueError(f"Yahoo Finance returned no data after 3 attempts"
+                     f"{f' (last error: {last_error})' if last_error else ''}. "
+                     "This is usually a temporary rate limit; try again in a few minutes.")
+
+
+class VAR:
+    def __init__(self, prices, confidence, rolling, value):
+        self.prices = prices
         self.confidence = confidence
         self.roll = rolling
         self.value = value
-        self.get_data()
+        self.compute()
 
-    def get_data(self):
-        df = yf.download(self.tickers, str(self.start), str(self.end))
-
-        if df.empty or "Close" not in df:
-            st.write(self.start, self.end)
-            raise ValueError("No data retrieved. Check ticker symbols and date range.")
-        
-        self.adj_close_df = df["Close"]
-        self.log_returns_df = np.log(self.adj_close_df / self.adj_close_df.shift(1)).dropna()
-
+    def compute(self):
+        self.log_returns_df = np.log(self.prices / self.prices.shift(1)).dropna()
         if self.log_returns_df.empty:
-            raise ValueError("Log returns DataFrame is empty. Ensure sufficient data is available.")
-
-        self.equal_weights = np.array([1 / len(self.tickers)] * len(self.tickers))
-        historical_returns = (self.log_returns_df * self.equal_weights).sum(axis=1)
-        self.rolling_returns = historical_returns.rolling(window=self.roll).sum().dropna()
-
+            raise ValueError("Not enough overlapping price history for these tickers and dates.")
+        n = self.prices.shape[1]
+        self.equal_weights = np.full(n, 1 / n)
+        daily = self.log_returns_df @ self.equal_weights
+        self.rolling_returns = daily.rolling(window=self.roll).sum().dropna()
         if self.rolling_returns.empty:
-            raise ValueError("Rolling returns DataFrame is empty. Increase rolling window or check data availability.")
+            raise ValueError("Rolling window is longer than the available data. "
+                             "Shorten the window or widen the date range.")
+        # Historical: empirical loss quantile of the rolling-window returns
+        self.historical_var = -np.percentile(self.rolling_returns, (1 - self.confidence) * 100) * self.value
+        # Parametric: normal approximation, annualised covariance scaled to the window
+        cov = self.log_returns_df.cov() * 252
+        self.portfolio_std = float(np.sqrt(self.equal_weights @ cov.values @ self.equal_weights))
+        self.parametric_var = (self.portfolio_std * norm.ppf(self.confidence)
+                               * np.sqrt(self.roll / 252) * self.value)
 
-        self.historical_method()
-        self.parametric_method()
+    def plot_var_results(self, title, var_value, conf_level):
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.hist(self.rolling_returns * self.value, bins=50, density=True)
+        ax.set_xlabel(f"\n{title} VaR = ${var_value:,.2f}")
+        ax.set_ylabel("Density")
+        ax.set_title(f"Distribution of Portfolio's {self.roll}-Day Returns ({title} VaR)")
+        ax.axvline(-var_value, color="r", linestyle="dashed", linewidth=2,
+                   label=f"VaR at {conf_level:.0%} confidence level")
+        ax.legend()
+        fig.tight_layout()
+        return fig
 
-    def historical_method(self):
-        historical_VaR = -np.percentile(self.rolling_returns, 100 - (self.confidence * 100)) * self.value
-        self.historical_var = historical_VaR
-
-    def parametric_method(self):
-        self.cov_matrix = self.log_returns_df.cov() * 252
-        self.portfolio_std = np.sqrt(np.dot(self.equal_weights.T, np.dot(self.cov_matrix, self.equal_weights)))
-        parametric_VaR = self.portfolio_std * norm.ppf(self.confidence) * np.sqrt(self.roll / 252) * self.value
-        self.parametric_var = parametric_VaR
-
-    def plot_var_results(self, title, var_value, returns_dollar, conf_level):
-        plt.figure(figsize=(12, 6))
-        plt.hist(returns_dollar, bins=50, density=True)
-        plt.xlabel(f'\n {title} VaR = ${var_value:.2f}')
-        plt.ylabel('Frequency')
-        plt.title(f"Distribution of Portfolio's {self.roll}-Day Returns ({title} VaR)")
-        plt.axvline(-var_value, color='r', linestyle='dashed', linewidth=2, label=f'VaR at {conf_level:.0%} confidence level')
-        plt.legend()
-        plt.tight_layout()
-        return plt
 
 def calculate_and_display_var(tickers, start_date, end_date, rolling_window, confidence_level, value):
-    var = VAR(tickers, start_date, end_date, confidence_level, rolling_window, value)
-    
-    chart_col1, chart_col2 = st.columns(2)
-    with chart_col1:
-        st.info("Historical VaR Chart")
-        historical_chart = var.plot_var_results("Historical", var.historical_var, var.rolling_returns * var.value, confidence_level)
-        st.pyplot(historical_chart)
+    # yfinance's `end` is exclusive, so add a day to include the chosen end date.
+    end_exclusive = pd.Timestamp(end_date) + pd.Timedelta(days=1)
+    try:
+        prices = download_prices(tuple(tickers), str(pd.Timestamp(start_date).date()),
+                                 str(end_exclusive.date()))
+        missing = [t for t in tickers if t not in prices.columns]
+        if missing:
+            st.warning(f"No data found for: {', '.join(missing)}. Calculated with the remaining tickers.")
+        var = VAR(prices, confidence_level, rolling_window, value)
+    except ValueError as e:
+        st.error(str(e))
+        return
 
-    with chart_col2:
-        st.info("Parametric VaR Chart")
-        parametric_chart = var.plot_var_results("Parametric", var.parametric_var, var.rolling_returns * var.value, confidence_level)
-        st.pyplot(parametric_chart)
+    col_a, col_b = st.columns(2)
+    for col, label, val in ((col_a, "Historical", var.historical_var),
+                            (col_b, "Parametric", var.parametric_var)):
+        with col:
+            st.info(f"{label} VaR Chart")
+            fig = var.plot_var_results(label, val, confidence_level)
+            st.pyplot(fig)
+            plt.close(fig)
 
-    col1, col3 = st.columns([1, 1])
-    
-    with col1:
+    left, right = st.columns(2)
+    with left:
         st.info("Input Summary")
-        st.write(f"Tickers: {tickers}")
-        st.write(f"Start Date: {start_date}")
-        st.write(f"End Date: {end_date}")
+        st.write(f"Tickers: {list(prices.columns)}")
+        st.write(f"Start Date: {pd.Timestamp(start_date).date()}")
+        st.write(f"End Date: {pd.Timestamp(end_date).date()}")
         st.write(f"Rolling Window: {rolling_window} days")
         st.write(f"Confidence Level: {confidence_level:.2%}")
         st.write(f"Portfolio Value: ${value:,.2f}")
-
-    with col3:
+    with right:
         st.info("VaR Calculation Output")
-        data = {
-            "Method": ["Historical", "Parametric"],
-            "VaR Value": [f"${var.historical_var:,.2f}", f"${var.parametric_var:,.2f}"]
-        }
-        df = pd.DataFrame(data)
-        st.table(df)
-
-    st.session_state['recent_outputs'].append({
-        "Historical": f"${var.historical_var:,.2f}",
-        "Parametric": f"${var.parametric_var:,.2f}"
-    })
-
-    with col3:
+        st.table(pd.DataFrame({"Method": ["Historical", "Parametric"],
+                               "VaR Value": [f"${var.historical_var:,.2f}", f"${var.parametric_var:,.2f}"]}))
+        st.session_state["recent_outputs"].append(
+            {"Historical": f"${var.historical_var:,.2f}", "Parametric": f"${var.parametric_var:,.2f}"})
         st.info("Previous VaR Calculation Outputs")
-        recent_df = pd.DataFrame(st.session_state['recent_outputs'])
-        st.table(recent_df)
+        st.table(pd.DataFrame(st.session_state["recent_outputs"]))
 
-st.set_page_config(page_title="Value at Risk", page_icon="📈", layout="wide", initial_sidebar_state="expanded")
 
-if 'recent_outputs' not in st.session_state:
-    st.session_state['recent_outputs'] = []
+if "recent_outputs" not in st.session_state:
+    st.session_state["recent_outputs"] = []
 
 with st.sidebar:
-    st.title("Greeks and Implied Volatility")
+    st.title("Value at Risk Calculator")
+    with st.form("var_inputs"):
+        raw = st.text_input("Enter Ticker Symbols Separated by Commas:", value="SPY,AAPL,QQQ")
+        start_date = st.date_input("Enter Starting Date for Portfolio:", value=pd.Timestamp("2021-01-01"))
+        end_date = st.date_input("Enter Ending Date for Portfolio:", value=pd.Timestamp.today())
+        confidence = st.slider("Confidence level:", min_value=0.90, max_value=0.99, value=0.95, step=0.01)
+        rolling = st.number_input("Rolling period length (days)", min_value=1, max_value=252, value=20)
+        val_of_pf = st.number_input("Value of the Portfolio:", value=1000, min_value=1)
+        submitted = st.form_submit_button("Calculate VaR")
 
-    tickers = st.text_input("Enter Ticker Symbols Separated by Commas:", value="SPY,AAPL,QQQ").split(",")
-    start_date = st.date_input("Enter Starting Date for Portfolio:", value=pd.to_datetime('2021-01-01'))
-    end_date = st.date_input("Enter Ending Date for Portfolio:", value=pd.to_datetime("today")) - pd.Timedelta(days=1)
-    confidence = st.slider("Enter the confidence in the portfolio:", min_value=0.90, max_value=1.00)
-    rolling = st.number_input("Enter rolling period length", min_value=1, max_value=252, value=50)
-    val_of_pf = st.number_input("Value of the Portfolio:", value=1000)
+tickers = list(dict.fromkeys(t.strip().upper() for t in raw.split(",") if t.strip()))  # strip, dedupe
 
-if 'first_run' not in st.session_state or st.session_state['first_run']:
-    st.session_state['first_run'] = False
-    default_tickers = 'SPY,AAPL,QQQ'.split(",")
-    default_start_date = pd.to_datetime('2021-01-01')
-    default_end_date = pd.to_datetime('today') - pd.Timedelta(days=1)
-    default_rolling_window = 20
-    default_confidence_level = 0.95
-    default_portfolio_val = 1000
-
-    calculate_and_display_var(default_tickers, default_start_date, default_end_date, default_rolling_window, default_confidence_level, default_portfolio_val)
-
-calculate_and_display_var(tickers, start_date, end_date, rolling, confidence, val_of_pf)
+# Run once on first load, then only when the button is pressed (not on every widget change).
+if submitted or not st.session_state.get("auto_ran"):
+    st.session_state["auto_ran"] = True
+    if not tickers:
+        st.error("Enter at least one ticker symbol.")
+    elif pd.Timestamp(start_date) >= pd.Timestamp(end_date):
+        st.error("Start date must be before the end date.")
+    else:
+        calculate_and_display_var(tickers, start_date, end_date, rolling, confidence, val_of_pf)

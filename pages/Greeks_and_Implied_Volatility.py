@@ -9,7 +9,7 @@ from scipy.optimize import brentq
 from scipy.interpolate import griddata
 import plotly.graph_objects as go
 from numpy import exp, sqrt, log
-from Finance_Pricing_App import BlackScholesOption
+from models import BlackScholesOption
 
 today = pd.Timestamp('today').normalize()
 
